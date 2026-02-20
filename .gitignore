@@ -1,0 +1,26 @@
+# Arduino IDE generated files
+build/
+dist/
+
+# Compiled files
+*.elf
+*.bin
+*.hex
+*.map
+
+# Arduino IDE settings
+*.prefs.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Serial output
+*.log
