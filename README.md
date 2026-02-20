@@ -1,4 +1,4 @@
-# Smart Fan HR Bridge
+# ESP32-C3 HR Fan Controller
 
 ESP32-C3 устройство, которое считывает пульс с BLE пульсометра, управляет 4 реле в зависимости от ЧСС, и транслирует данные на смартфон.
 
@@ -176,10 +176,9 @@ constexpr int HYSTERESIS = 5;                        // Гистерезис BPM
 ## Структура проекта
 
 ```
-smartfan/
-├── smartfan.ino      # Исходный код прошивки
-├── README.md         # Документация
-└── .gitignore        # Git ignore file
+esp32c3-hr-fan-controller/
+├── esp32c3-hr-fan-controller.ino  # Исходный код прошивки
+└── README.md                      # Документация
 ```
 
 ## Версии
@@ -198,3 +197,9 @@ MIT License
 ## Авторы
 
 - Denis Orden
+
+## Ссылки
+
+- [GitHub репозиторий](https://github.com/dordenis/esp32c3-hr-fan-controller)
+- [Heart Rate Service Specification](https://www.bluetooth.com/specifications/specs/heart-rate-service-1-0/)
+- [ESP32 Arduino Core](https://github.com/espressif/arduino-esp32)

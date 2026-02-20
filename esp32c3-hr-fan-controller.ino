@@ -39,6 +39,8 @@ bool doConnect = false;
 bool sensorConnected = false;   
 int currentActiveRelay = -1;
 int lastBPM = 0;
+String sensorName = "";  // Имя подключенного пульсометра
+volatile bool isScanning = false;  // Флаг состояния сканирования
 
 // Иконка вентилятора (24x24 пикселя)
 const unsigned char epd_bitmap_fan [] PROGMEM = {
@@ -61,13 +63,13 @@ const unsigned char epd_bitmap_heart [] PROGMEM = {
 };
 
 // --- ФУНКЦИЯ ОБНОВЛЕНИЯ ЭКРАНА ---
-void updateDisplay(int bpm, const char* status) {
+void updateDisplay(int bpm, const char* name) {
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
     
     display.setTextSize(1);
     display.setCursor(0, 0);
-    display.print(status);
+    display.print(name);
 
     int yOffset = 8;
 
@@ -114,8 +116,9 @@ void handleRelays(int bpm) {
 class MyClientCallback : public BLEClientCallbacks {
     void onDisconnect(BLEClient* pClient) {
         sensorConnected = false;
+        sensorName = "";  // Сбрасываем имя
         handleRelays(0);
-        updateDisplay(0, "Lost Sensor");
+        updateDisplay(0, "Scanning...");
         Serial.println("Sensor disconnected");
     }
 };
@@ -152,7 +155,13 @@ void notifyCallback(
         if (bpmValue > 0 && bpmValue < 200) {
             lastBPM = bpmValue;
             handleRelays(lastBPM);
-            updateDisplay(lastBPM, "Connected");
+            
+            // Отображаем имя пульсометра вместо "Connected"
+            if (sensorName.length() > 0) {
+                updateDisplay(lastBPM, sensorName.c_str());
+            } else {
+                updateDisplay(lastBPM, "Connected");
+            }
             
             // Отправка данных на телефон через сервер
             if (pServerCharacteristic && sensorConnected) {
@@ -181,7 +190,16 @@ class MyScanCallback : public BLEAdvertisedDeviceCallbacks {
             advertisedDevice.isAdvertisingService(HR_SERVICE_UUID)) {
             Serial.println(">>> Heart Rate Sensor Found!");
             
+            // Сохраняем имя датчика
+            if (advertisedDevice.haveName()) {
+                sensorName = advertisedDevice.getName().c_str();
+                Serial.printf("Sensor name: %s\n", sensorName.c_str());
+            } else {
+                sensorName = "HR Sensor";
+            }
+            
             BLEDevice::getScan()->stop();
+            isScanning = false;
             if(foundHeartSensor) delete foundHeartSensor;
             foundHeartSensor = new BLEAdvertisedDevice(advertisedDevice);
             doConnect = true;
@@ -189,14 +207,18 @@ class MyScanCallback : public BLEAdvertisedDeviceCallbacks {
     }
     
     void onScanEnd(BLEScan* pScan) {
-        Serial.println("Scan ended, waiting for next attempt...");
+        Serial.println("Scan ended");
+        isScanning = false;
     }
 };
 
 // --- ПОДКЛЮЧЕНИЕ К ПУЛЬСОМЕТРУ ---
 bool connectToHeartSensor() {
+    isScanning = false;  // Сбрасываем флаг сканирования
+    
     if (!foundHeartSensor) {
         Serial.println("No device found!");
+        sensorName = "";
         return false;
     }
     
@@ -209,6 +231,7 @@ bool connectToHeartSensor() {
 
     if (!pClient->connect(foundHeartSensor)) {
         Serial.println("Connection failed!");
+        sensorName = "";
         delete pClient;
         return false;
     }
@@ -218,6 +241,7 @@ bool connectToHeartSensor() {
     BLERemoteService* pService = pClient->getService(HR_SERVICE_UUID);
     if (!pService) {
         Serial.println("Service not found!");
+        sensorName = "";
         pClient->disconnect();
         delete pClient;
         return false;
@@ -227,6 +251,7 @@ bool connectToHeartSensor() {
     pHRCharacteristic = pService->getCharacteristic(HR_CHAR_UUID);
     if (!pHRCharacteristic) {
         Serial.println("Characteristic not found!");
+        sensorName = "";
         pClient->disconnect();
         delete pClient;
         return false;
@@ -241,6 +266,7 @@ bool connectToHeartSensor() {
     }
     
     Serial.println("Subscribe failed!");
+    sensorName = "";
     pClient->disconnect();
     delete pClient;
     return false;
@@ -311,8 +337,8 @@ void setup() {
     pScan->setActiveScan(true);
     pScan->setDuplicateFilter(false);
     
-    Serial.println("Starting initial scan...");
-    pScan->start(5, true);  // blocking scan for 5 seconds
+    // Не запускаем сканирование в setup - начнем в loop
+    Serial.println("Ready to scan...");
 
     Serial.println("Scanning for HR sensors...");
     updateDisplay(0, "Scanning...");
@@ -322,6 +348,7 @@ void loop() {
     // Обработка подключения к пульсометру
     if (doConnect) {
         doConnect = false;
+        isScanning = false;
         updateDisplay(lastBPM, "Connecting...");
 
         if (!connectToHeartSensor()) {
@@ -330,18 +357,23 @@ void loop() {
                 delete foundHeartSensor;
                 foundHeartSensor = nullptr;
             }
+            sensorName = "";
             // Перезапуск сканирования
+            isScanning = true;
             BLEDevice::getScan()->start(5, true);
+            isScanning = false;
             updateDisplay(0, "Scanning...");
         }
     }
 
     // Если не подключены и не сканируемся - запускаем сканирование
-    if (!sensorConnected && !doConnect && !BLEDevice::getScan()->isScanning()) {
+    if (!sensorConnected && !doConnect && !isScanning) {
         static unsigned long lastScanAttempt = 0;
         if (millis() - lastScanAttempt > 5000) {
             Serial.println("Restarting scan...");
+            isScanning = true;
             BLEDevice::getScan()->start(5, true);
+            isScanning = false;
             updateDisplay(0, "Scanning...");
             lastScanAttempt = millis();
         }
