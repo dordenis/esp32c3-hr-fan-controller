@@ -189,7 +189,7 @@ class MyScanCallback : public BLEAdvertisedDeviceCallbacks {
     }
     
     void onScanEnd(BLEScan* pScan) {
-        Serial.println("Scan ended");
+        Serial.println("Scan ended, waiting for next attempt...");
     }
 };
 
@@ -251,26 +251,31 @@ void setup() {
     while(!Serial) delay(100);
     
     Serial.println("\n=== Smart Fun HR Bridge ===");
+    Serial.println("Starting initialization...");
     
     // Инициализация реле
     for (int i = 0; i < NUM_RELAYS; i++) {        
         pinMode(RELAY_PINS[i], OUTPUT);
         digitalWrite(RELAY_PINS[i], OFF);
     }
+    Serial.println("Relays initialized");
 
     // Инициализация OLED
     if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
         Serial.println("OLED failed!");
         for(;;); 
     }
+    Serial.println("OLED initialized");
 
     display.setRotation(2);
     display.ssd1306_command(0x81);
     display.ssd1306_command(255);
+    Serial.println("Display configured");
 
     // Инициализация BLE
     Serial.println("Init BLE...");
     BLEDevice::init("SmartFun HR");
+    Serial.println("BLE initialized");
     
     // Создаём BLE сервер для телефона
     Serial.println("Creating BLE Server...");
@@ -297,7 +302,7 @@ void setup() {
     BLEDevice::startAdvertising();
     
     Serial.println("BLE Server started - phone can connect!");
-    
+
     // Настраиваем сканер для поиска пульсометра
     BLEScan* pScan = BLEDevice::getScan();
     pScan->setAdvertisedDeviceCallbacks(new MyScanCallback());
@@ -305,33 +310,42 @@ void setup() {
     pScan->setWindow(449);
     pScan->setActiveScan(true);
     pScan->setDuplicateFilter(false);
-    pScan->start(5, false);
     
+    Serial.println("Starting initial scan...");
+    pScan->start(5, true);  // blocking scan for 5 seconds
+
     Serial.println("Scanning for HR sensors...");
     updateDisplay(0, "Scanning...");
 }
 
 void loop() {
+    // Обработка подключения к пульсометру
     if (doConnect) {
         doConnect = false;
         updateDisplay(lastBPM, "Connecting...");
-        
+
         if (!connectToHeartSensor()) {
-            delete foundHeartSensor;
-            foundHeartSensor = nullptr;
-            BLEDevice::getScan()->start(5, false);
-            updateDisplay(0, "Retry...");
+            Serial.println("Connection failed, cleaning up...");
+            if (foundHeartSensor) {
+                delete foundHeartSensor;
+                foundHeartSensor = nullptr;
+            }
+            // Перезапуск сканирования
+            BLEDevice::getScan()->start(5, true);
+            updateDisplay(0, "Scanning...");
         }
     }
 
-    if (!sensorConnected && !doConnect) {
+    // Если не подключены и не сканируемся - запускаем сканирование
+    if (!sensorConnected && !doConnect && !BLEDevice::getScan()->isScanning()) {
         static unsigned long lastScanAttempt = 0;
-        if (millis() - lastScanAttempt > 5000 && !BLEDevice::getScan()->isScanning()) {
-            BLEDevice::getScan()->start(5, false);
+        if (millis() - lastScanAttempt > 5000) {
+            Serial.println("Restarting scan...");
+            BLEDevice::getScan()->start(5, true);
             updateDisplay(0, "Scanning...");
             lastScanAttempt = millis();
         }
     }
-    
+
     delay(200);
 }
