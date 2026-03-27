@@ -7,6 +7,7 @@
 #include <BLEAdvertisedDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+#include <BLE2902.h> // ДОБАВЛЕНО: Библиотека для работы с дескриптором уведомлений
 
 // --- НАСТРОЙКИ ЭКРАНА ---
 #define SCREEN_WIDTH 128
@@ -27,22 +28,24 @@ const int OFF = HIGH;
 static BLEUUID HR_SERVICE_UUID((uint16_t)0x180D);
 static BLEUUID HR_CHAR_UUID((uint16_t)0x2A37);
 
-// Состояния
+// --- СОСТОЯНИЯ ---
 BLEAdvertisedDevice* foundHeartSensor = nullptr;
 BLEClient* pClient = nullptr;
 BLERemoteCharacteristic* pHRCharacteristic = nullptr;
+
 BLEServer* pServer = nullptr;
 BLEService* pServerService = nullptr;
 BLECharacteristic* pServerCharacteristic = nullptr;
 
 bool doConnect = false;       
 bool sensorConnected = false;   
+bool phoneConnected = false; 
 int currentActiveRelay = -1;
 int lastBPM = 0;
 String sensorName = "";
 volatile bool isScanning = false;
 
-// Иконки
+// --- ИКОНКИ ---
 const unsigned char epd_bitmap_fan [] PROGMEM = {
     0x00, 0x07, 0x80, 0x00, 0x18, 0x40, 0x00, 0x20, 0x20, 0x00, 0x20, 0x20, 
     0x00, 0x20, 0x20, 0x3E, 0x60, 0x20, 0x42, 0x60, 0x60, 0x80, 0x60, 0x00, 
@@ -127,10 +130,12 @@ class MyClientCallback : public BLEClientCallbacks {
 class MyServerCallback : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
         Serial.println("Phone connected!");
+        phoneConnected = true; // ДОБАВЛЕНО
     }
     
     void onDisconnect(BLEServer* pServer) override {
         Serial.println("Phone disconnected");
+        phoneConnected = false; // ДОБАВЛЕНО
         // Перезапускаем рекламу, чтобы телефон мог снова подключиться
         BLEDevice::startAdvertising();
     }
@@ -139,7 +144,8 @@ class MyServerCallback : public BLEServerCallbacks {
 void notifyCallback(BLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
     if (length >= 2) {
         uint8_t flags = pData[0];
-        uint8_t bpmValue = (flags & 0x01) ? pData[2] : pData[1];
+        // ИСПРАВЛЕНО: Корректное чтение 16-битного и 8-битного значения
+        uint16_t bpmValue = (flags & 0x01) ? (pData[1] | (pData[2] << 8)) : pData[1];
         
         if (bpmValue > 0 && bpmValue < 200) {
             lastBPM = bpmValue;
@@ -151,10 +157,10 @@ void notifyCallback(BLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pDa
                 updateDisplay(lastBPM, "Connected");
             }
             
-            if (pServerCharacteristic && sensorConnected) {
-                uint8_t hrmData[2] = {0x00, bpmValue};
+            if (pServerCharacteristic && phoneConnected) {
+                uint8_t hrmData[2] = {0x00, (uint8_t)bpmValue};
                 pServerCharacteristic->setValue(hrmData, 2);
-                pServerCharacteristic->notify(true);
+                pServerCharacteristic->notify(); // важно без true, без потверждения от клиента
             }
         }
     }
@@ -166,7 +172,6 @@ class MyScanCallback : public BLEAdvertisedDeviceCallbacks {
             Serial.printf(">>> Heart Rate Sensor Found: %s (%s)\n", 
                 advertisedDevice.haveName() ? advertisedDevice.getName().c_str() : "Unknown",
                 advertisedDevice.getAddress().toString().c_str());
-            
             sensorName = advertisedDevice.haveName() ? advertisedDevice.getName().c_str() : "HR Sensor";
             
             BLEDevice::getScan()->stop();
@@ -188,25 +193,21 @@ bool connectToHeartSensor() {
     isScanning = false;
     
     if (!foundHeartSensor) return false;
-    
     Serial.printf("Connecting to: %s\n", foundHeartSensor->getAddress().toString().c_str());
 
-    // Если клиент уже существует, удаляем его старым надежным способом
     if (pClient != nullptr) {
         if (pClient->isConnected()) {
             pClient->disconnect();
-            delay(100); // Даем стеку время закрыть сессию
+            delay(100); 
         }
-        delete pClient; 
+        delete pClient;
         pClient = nullptr;
     }
 
     pClient = BLEDevice::createClient();
     pClient->setClientCallbacks(new MyClientCallback());
-
-    // Попытка подключения
+    
     if (!pClient->connect(foundHeartSensor)) {
-        // Оставляем pClient как есть, он будет удален при следующей попытке вызова этой функции
         return false;
     }
     
@@ -236,9 +237,9 @@ bool connectToHeartSensor() {
 
 void setup() {
     Serial.begin(115200);
-    delay(2000); // Даем время на открытие монитора порта
+    delay(2000); 
     
-    Serial.println("\n=== Smart Fun HR Bridge ===");
+    Serial.println("\n=== Smart Fun ===");
     
     // Инициализация реле
     for (int i = 0; i < NUM_RELAYS; i++) {        
@@ -256,23 +257,33 @@ void setup() {
     display.ssd1306_command(255);
 
     // Инициализация BLE
-    BLEDevice::init("SmartFun HR");
+    BLEDevice::init("SmartFun");
     
     // Создаём BLE сервер для телефона
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallback());
-    pServerService = pServer->createService(HR_SERVICE_UUID);
+    pServerService = pServer->createService(HR_SERVICE_UUID);   
+    
+    // ИСПРАВЛЕНО: Убрал свойство WRITE за ненадобностью, оставил только READ и NOTIFY
     pServerCharacteristic = pServerService->createCharacteristic(
         HR_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ |
-        BLECharacteristic::PROPERTY_WRITE |
         BLECharacteristic::PROPERTY_NOTIFY
     );
+    
+    // ДОБАВЛЕНО: Дескриптор 2902, чтобы телефон мог "подписаться" на уведомления
+    pServerCharacteristic->addDescriptor(new BLE2902());
+
     pServerService->start();
     
     BLEAdvertising* pServerAdvertising = BLEDevice::getAdvertising();
     pServerAdvertising->addServiceUUID(HR_SERVICE_UUID);
+
+    pServerAdvertising->setAppearance(0x0340); // Иконка пульсометра (Generic Heart Rate Sensor)
     pServerAdvertising->setScanResponse(true);
+    pServerAdvertising->setMinPreferred(0x06);  
+    pServerAdvertising->setMaxPreferred(0x12);
+
     BLEDevice::startAdvertising();
 
     // Настраиваем сканер
@@ -297,10 +308,7 @@ void loop() {
                 foundHeartSensor = nullptr;
             }
             sensorName = "";
-            
-            // Очищаем кэш сканера, так как старые данные могут быть невалидны
             BLEDevice::getScan()->clearResults();
-            
             isScanning = true;
             BLEDevice::getScan()->start(5, false); 
             isScanning = false;
@@ -313,7 +321,6 @@ void loop() {
         static unsigned long lastScanAttempt = 0;
         if (millis() - lastScanAttempt > 5000) {
             isScanning = true;
-            
             BLEDevice::getScan()->clearResults();
             BLEDevice::getScan()->start(5, false);
             
